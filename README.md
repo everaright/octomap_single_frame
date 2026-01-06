@@ -31,4 +31,14 @@ Traditional octomaps, due to the accumulation of point clouds, can cause noticea
 
 Please note that in the octomap_lidar_test.launch , the coordinate system and point cloud topic name need to be modified according to your actual setup. Most importantly, remember that it can only process point clouds of the type pointcloud2!
 
+Below is an actual case I ran in the simulation.
+
+Gazebo
+<img width="1397" height="839" alt="2026-01-06 14-33-22 的屏幕截图" src="https://github.com/user-attachments/assets/c8ff36e6-bc9e-4327-bf30-a7b2602f0dea" />
+
+Rviz
+<img width="1442" height="838" alt="2026-01-06 14-33-08 的屏幕截图" src="https://github.com/user-attachments/assets/ae4a5102-4504-41eb-b4ad-d21ce5f8ac6b" />
+
+
+
   
