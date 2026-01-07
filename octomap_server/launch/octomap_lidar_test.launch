@@ -34,6 +34,10 @@
 		<param name="publish_free_space" value="true" />
 		<param name="latch" value="true" />
 		
+		<!-- Obstacle dilation parameters -->
+		<param name="dilate_obstacles" value="true" />
+		<param name="dilation_radius" value="3" />
+		
 		<!-- Remap input cloud topic -->
 		<remap from="cloud_in" to="/scan" />
 	</node>

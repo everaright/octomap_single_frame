@@ -185,6 +185,9 @@ protected:
   /// updates the downprojected 2D map as either occupied or free
   virtual void update2DMap(const OcTreeT::iterator& it, bool occupied);
 
+  /// Publish dilated obstacles as point cloud
+  void publishDilatedPointCloud(const ros::Time& rostime);
+
   inline unsigned mapIdx(int i, int j) const {
     return m_gridmap.info.width * j + i;
   }
@@ -213,7 +216,7 @@ protected:
   static std_msgs::ColorRGBA heightMapColor(double h);
   ros::NodeHandle m_nh;
   ros::NodeHandle m_nh_private;
-  ros::Publisher  m_markerPub, m_binaryMapPub, m_fullMapPub, m_pointCloudPub, m_collisionObjectPub, m_mapPub, m_cmapPub, m_fmapPub, m_fmarkerPub;
+  ros::Publisher  m_markerPub, m_binaryMapPub, m_fullMapPub, m_pointCloudPub, m_collisionObjectPub, m_mapPub, m_cmapPub, m_fmapPub, m_fmarkerPub, m_dilatedPointCloudPub, m_dilatedMapPub;
   message_filters::Subscriber<sensor_msgs::PointCloud2>* m_pointCloudSub;
   tf::MessageFilter<sensor_msgs::PointCloud2>* m_tfPointCloudSub;
   ros::ServiceServer m_octomapBinaryService, m_octomapFullService, m_clearBBXService, m_resetService;
@@ -262,6 +265,10 @@ protected:
   bool m_compressMap;
 
   bool m_initConfig;
+
+  // obstacle dilation parameters:
+  bool m_dilateObstacles;
+  int m_dilationRadius;
 
   // downprojected 2D map:
   bool m_incrementalUpdate;

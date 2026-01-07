@@ -70,7 +70,9 @@ OctomapServer::OctomapServer(const ros::NodeHandle private_nh_, const ros::NodeH
   m_groundFilterDistance(0.04), m_groundFilterAngle(0.15), m_groundFilterPlaneDistance(0.07),
   m_compressMap(true),
   m_incrementalUpdate(false),
-  m_initConfig(true)
+  m_initConfig(true),
+  m_dilateObstacles(false),
+  m_dilationRadius(1)
 {
   double probHit, probMiss, thresMin, thresMax;
 
@@ -110,6 +112,9 @@ OctomapServer::OctomapServer(const ros::NodeHandle private_nh_, const ros::NodeH
   m_nh_private.param("sensor_model/max", thresMax, 0.97);
   m_nh_private.param("compress_map", m_compressMap, m_compressMap);
   m_nh_private.param("incremental_2D_projection", m_incrementalUpdate, m_incrementalUpdate);
+
+  m_nh_private.param("dilate_obstacles", m_dilateObstacles, m_dilateObstacles);
+  m_nh_private.param("dilation_radius", m_dilationRadius, m_dilationRadius);
 
   if (m_filterGroundPlane && (m_pointcloudMinZ > 0.0 || m_pointcloudMaxZ < 0.0)){
     ROS_WARN_STREAM("You enabled ground filtering but incoming pointclouds will be pre-filtered in ["
@@ -171,7 +176,9 @@ OctomapServer::OctomapServer(const ros::NodeHandle private_nh_, const ros::NodeH
   m_binaryMapPub = m_nh.advertise<Octomap>("octomap_binary", 1, m_latchedTopics);
   m_fullMapPub = m_nh.advertise<Octomap>("octomap_full", 1, m_latchedTopics);
   m_pointCloudPub = m_nh.advertise<sensor_msgs::PointCloud2>("octomap_point_cloud_centers", 1, m_latchedTopics);
+  m_dilatedPointCloudPub = m_nh.advertise<sensor_msgs::PointCloud2>("octomap_dilated_obstacles", 1, m_latchedTopics);
   m_mapPub = m_nh.advertise<nav_msgs::OccupancyGrid>("projected_map", 5, m_latchedTopics);
+  m_dilatedMapPub = m_nh.advertise<nav_msgs::OccupancyGrid>("projected_map_dilated", 5, m_latchedTopics);
   m_fmarkerPub = m_nh.advertise<visualization_msgs::MarkerArray>("free_cells_vis_array", 1, m_latchedTopics);
 
   m_pointCloudSub = new message_filters::Subscriber<sensor_msgs::PointCloud2> (m_nh, "cloud_in", 5);
@@ -495,7 +502,48 @@ void OctomapServer::publishProjected2DMap(const ros::Time& rostime) {
   m_publish2DMap = (m_latchedTopics || m_mapPub.getNumSubscribers() > 0);
   if (m_publish2DMap) {
     m_gridmap.header.stamp = rostime;
+    
+    // Publish original map first
     m_mapPub.publish(m_gridmap);
+    
+    // apply obstacle dilation if enabled
+    if (m_dilateObstacles && m_dilationRadius > 0) {
+      // Create a copy for dilation to avoid modifying the original map
+      nav_msgs::OccupancyGrid dilatedMap = m_gridmap;
+      
+      // Dilate the copy
+      std::vector<int8_t> dilated_data = dilatedMap.data;
+      int radius = m_dilationRadius;
+      
+      for (unsigned int j = 0; j < dilatedMap.info.height; ++j) {
+        for (unsigned int i = 0; i < dilatedMap.info.width; ++i) {
+          unsigned int idx = dilatedMap.info.width * j + i;
+          
+          if (m_gridmap.data[idx] == 100) {
+            for (int dy = -radius; dy <= radius; ++dy) {
+              for (int dx = -radius; dx <= radius; ++dx) {
+                int ni = i + dx;
+                int nj = j + dy;
+                
+                if (ni >= 0 && ni < (int)dilatedMap.info.width && 
+                    nj >= 0 && nj < (int)dilatedMap.info.height) {
+                  unsigned int n_idx = dilatedMap.info.width * nj + ni;
+                  if (dilated_data[n_idx] != 100) {
+                    dilated_data[n_idx] = 100;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      dilatedMap.data = dilated_data;
+      dilatedMap.header.stamp = rostime;
+      m_dilatedMapPub.publish(dilatedMap);
+      
+      publishDilatedPointCloud(rostime);
+    }
   }
 }
 
@@ -1117,7 +1165,74 @@ void OctomapServer::update2DMap(const OcTreeT::iterator& it, bool occupied){
 
 }
 
-
+void OctomapServer::publishDilatedPointCloud(const ros::Time& rostime) {
+  bool publishPointCloud = (m_latchedTopics || m_dilatedPointCloudPub.getNumSubscribers() > 0);
+  
+  if (!publishPointCloud)
+    return;
+  
+  // Collect all occupied points from octree with their 3D coordinates
+  std::vector<octomap::point3d> occupiedPoints;
+  
+  for (OcTreeT::iterator it = m_octree->begin(m_maxTreeDepth), end = m_octree->end();
+       it != end; ++it) {
+    if (m_octree->isNodeOccupied(*it)) {
+      occupiedPoints.push_back(it.getCoordinate());
+    }
+  }
+  
+  if (occupiedPoints.empty()) {
+    return;
+  }
+  
+  // Use a set to track unique points and avoid duplicates
+  std::set<std::tuple<int, int, int>> uniquePoints;
+  double resolution = m_octree->getResolution();
+  int dilationRadius = (int)std::ceil(m_dilationRadius * resolution / resolution);
+  
+  // For each occupied point, add it and its dilated neighbors
+  for (const auto& point : occupiedPoints) {
+    // Convert to grid coordinates for dilating
+    int ix = (int)std::round(point.x() / resolution);
+    int iy = (int)std::round(point.y() / resolution);
+    int iz = (int)std::round(point.z() / resolution);
+    
+    // Add original point
+    uniquePoints.insert(std::make_tuple(ix, iy, iz));
+    
+    // Add dilated points in xy plane only (keep z the same)
+    for (int dx = -dilationRadius; dx <= dilationRadius; ++dx) {
+      for (int dy = -dilationRadius; dy <= dilationRadius; ++dy) {
+        // Skip the original point and only add points within dilated circle/square
+        if (dx != 0 || dy != 0) {
+          int nix = ix + dx;
+          int niy = iy + dy;
+          uniquePoints.insert(std::make_tuple(nix, niy, iz));
+        }
+      }
+    }
+  }
+  
+  // Convert back to world coordinates and create point cloud
+  pcl::PointCloud<PCLPoint> pclCloud;
+  pclCloud.header.frame_id = m_worldFrameId;
+  
+  for (const auto& gridPoint : uniquePoints) {
+    double x = std::get<0>(gridPoint) * resolution;
+    double y = std::get<1>(gridPoint) * resolution;
+    double z = std::get<2>(gridPoint) * resolution;
+    
+    pclCloud.push_back(PCLPoint(x, y, z));
+  }
+  
+  // Publish as PointCloud2
+  sensor_msgs::PointCloud2 cloud;
+  pcl::toROSMsg(pclCloud, cloud);
+  cloud.header.frame_id = m_worldFrameId;
+  cloud.header.stamp = rostime;
+  
+  m_dilatedPointCloudPub.publish(cloud);
+}
 
 bool OctomapServer::isSpeckleNode(const OcTreeKey&nKey) const {
   OcTreeKey key;
@@ -1151,6 +1266,8 @@ void OctomapServer::reconfigureCallback(octomap_server::OctomapServerConfig& con
     m_filterGroundPlane         = config.filter_ground;
     m_compressMap               = config.compress_map;
     m_incrementalUpdate         = config.incremental_2D_projection;
+    m_dilateObstacles           = config.dilate_obstacles;
+    m_dilationRadius            = config.dilation_radius;
 
     // Parameters with a namespace require an special treatment at the beginning, as dynamic reconfigure
     // will overwrite them because the server is not able to match parameters' names.
